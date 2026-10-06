@@ -9,6 +9,7 @@
 - Las reglas exigen el protocolo v6 y la revisión anterior. Las páginas viejas deben recargarse; sus escrituras ya no pueden volver a introducir una copia antigua.
 - Se conservan las notificaciones pendientes, se procesa la primera notificación y se detectan saltos de revisión. Una señal de curso no se confunde con una revisión de la estructura.
 - Cada pestaña tiene un identificador diferente. Se protegen las planillas y las notas todavía sin guardar.
+- Las revisiones recibidas se registran por pestaña. Al abrir se carga de Firebase el alcance del usuario; no se acepta una revisión compartida de localStorage como prueba de que la copia es actual. Al volver a la pestaña se revalida la señal (máximo una vez por minuto), sin sondeo periódico de colecciones.
 - Se mantiene la carga por rol: cursos/asignaciones del docente; matrículas, notas y asistencias del estudiante; estructura completa solo en la interfaz administrativa. Los informes completos del administrador se cargan al solicitarlos.
 
 ## Seguridad: limitación deliberada

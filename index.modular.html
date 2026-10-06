@@ -924,6 +924,8 @@
         let sincronizacionVistaPendiente = false;
         const senalesPendientes = [];
         let transaccionesActivas = 0;
+        let revisionesCursosEnMemoria = {};
+        let ultimaRevalidacionFoco = 0;
         let revisionFirebaseActual = '';
         let alcanceDatosActual = 'login';
         let cursosAsistenciaCargada = new Set();
@@ -987,7 +989,7 @@
                 preservarBorradorLocal('conflicto');
                 clearTimeout(firebaseRetryTimer);
                 reintentoGuardadoEspecifico = null;
-                localStorage.removeItem(SYNC_PENDING_KEY);
+                sessionStorage.removeItem(SYNC_PENDING_KEY);
                 localStorage.removeItem('dunamisSyncProtocol');
                 firebaseReady = false;
                 showToast('Otro dispositivo modificó este registro. Tu borrador quedó protegido; se recargarán los datos confirmados. Usa «Descargar borradores» para revisarlo.', 'warning');
@@ -1094,7 +1096,7 @@
 
         function cargarDatosLocales() {
             try {
-                const datosGuardados = localStorage.getItem(STORAGE_KEY);
+                const datosGuardados = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY);
                 if (datosGuardados) db = JSON.parse(datosGuardados);
             } catch (error) {
                 console.warn('No se pudieron cargar los datos locales.', error);
@@ -1103,12 +1105,13 @@
 
         function guardarDatosLocales(options = {}) {
             try {
+                sessionStorage.setItem(STORAGE_KEY, JSON.stringify(db));
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
             } catch (error) {
                 console.warn('No se pudieron guardar los datos locales.', error);
             }
             if (!options.skipFirebase) {
-                localStorage.setItem(SYNC_PENDING_KEY, '1');
+                sessionStorage.setItem(SYNC_PENDING_KEY, '1');
                 if (firebaseReady && firestoreDB) guardarDatosFirebaseDebounced();
                 else console.warn('Cambio pendiente: Firebase todavía no está disponible.');
             }
@@ -1176,7 +1179,7 @@
 
         function cargarLineaBaseSincronizacion() {
             try {
-                const guardada = localStorage.getItem(SYNC_BASELINE_KEY);
+                const guardada = sessionStorage.getItem(SYNC_BASELINE_KEY) || localStorage.getItem(SYNC_BASELINE_KEY);
                 return guardada ? JSON.parse(guardada) : null;
             } catch (error) {
                 console.warn('No se pudo leer la linea base de sincronizacion.', error);
@@ -1186,7 +1189,7 @@
 
         function guardarLineaBaseSincronizacion(estado) {
             estadoFirebaseSincronizado = estado;
-            try { localStorage.setItem(SYNC_BASELINE_KEY, JSON.stringify(estado)); }
+            try { sessionStorage.setItem(SYNC_BASELINE_KEY, JSON.stringify(estado)); localStorage.setItem(SYNC_BASELINE_KEY, JSON.stringify(estado)); }
             catch (error) { console.warn('No se pudo guardar la linea base de sincronizacion.', error); }
         }
 
@@ -1385,11 +1388,11 @@
         }
 
         function leerRevisionesCursosLocales() {
-            try { return JSON.parse(localStorage.getItem(SYNC_COURSE_REVISIONS_KEY) || '{}'); }
-            catch (error) { localStorage.removeItem(SYNC_COURSE_REVISIONS_KEY); return {}; }
+            return { ...revisionesCursosEnMemoria };
         }
 
         function guardarRevisionesCursosLocales(revisiones) {
+            revisionesCursosEnMemoria = { ...(revisiones || {}) };
             localStorage.setItem(SYNC_COURSE_REVISIONS_KEY, JSON.stringify(revisiones || {}));
         }
 
@@ -1491,7 +1494,7 @@
             guardarLineaBaseSincronizacion(crearEstadoSincronizable());
             guardarDatosLocales({ skipFirebase: true });
             // Una base existente prevalece sobre la planeación incluida en el instalador.
-            localStorage.removeItem(SYNC_PENDING_KEY);
+            sessionStorage.removeItem(SYNC_PENDING_KEY);
         }
 
         async function cargarDatosAcademicosCoordinadorFirebase() {
@@ -1596,7 +1599,7 @@
 
         async function cargarDatosPorAlcanceFirebase(alcance, usuarioConocido = null) {
             const alcanceAnterior = localStorage.getItem(SYNC_SCOPE_KEY) || '';
-            if (alcanceAnterior && alcanceAnterior !== alcance.clave) localStorage.removeItem(SYNC_PENDING_KEY);
+            if (alcanceAnterior && alcanceAnterior !== alcance.clave) sessionStorage.removeItem(SYNC_PENDING_KEY);
             alcanceDatosActual = alcance.clave;
             estadoFirebaseSincronizado = null;
             if (alcance.rol === 'coordinador') await cargarDatosCoordinadorFirebase();
@@ -1619,43 +1622,23 @@
                     || (metadataInicial.updatedAt?.toMillis?.() ? String(metadataInicial.updatedAt.toMillis()) : '');
                 revisionFirebaseActual = revisionRemota;
                 const alcance = obtenerAlcanceInicial();
-                const revisionLocal = localStorage.getItem(SYNC_REVISION_KEY) || '';
-                const hayCambiosLocalesPendientes = localStorage.getItem(SYNC_PENDING_KEY) === '1'
+                const hayCambiosLocalesPendientes = (sessionStorage.getItem(SYNC_PENDING_KEY) === '1' || localStorage.getItem(SYNC_PENDING_KEY) === '1')
                     && localStorage.getItem(SYNC_SCOPE_KEY) === alcance.clave;
                 if (hayCambiosLocalesPendientes && estadoFirebaseSincronizado) {
                     preservarBorradorLocal('recuperacion');
+                    sessionStorage.removeItem(SYNC_PENDING_KEY);
                     localStorage.removeItem(SYNC_PENDING_KEY);
                     reintentoGuardadoEspecifico = null;
                     showToast('Se conservó un borrador local para revisión. Se cargarán los datos actuales de Firebase.', 'warning');
                 }
-                // La estructura administrativa usa caché validada por metadata. Las notas y
-                // asistencias se revalidan por curso mediante syncCursos, sin releer toda la base.
-                const alcanceCacheable = alcance.rol === 'publico' || alcance.rol === 'coordinador';
-                const tieneRevisionesAcademicas = alcance.rol !== 'coordinador' || Boolean(localStorage.getItem(SYNC_COURSE_REVISIONS_KEY));
-                const cacheLocalValida = !hayCambiosLocalesPendientes && localStorage.getItem('dunamisSyncProtocol') === '6' && alcanceCacheable && revisionRemota && revisionRemota === revisionLocal
-                    && localStorage.getItem(STORAGE_KEY)
-                    && localStorage.getItem(SYNC_SCOPE_KEY) === alcance.clave
-                    && tieneRevisionesAcademicas
-                    && localStorage.getItem(SYNC_PENDING_KEY) !== '1';
-                if (cacheLocalValida) {
-                    firebaseReady = true;
-                    alcanceDatosActual = alcance.clave;
-                    if (alcance.rol === 'coordinador' && localStorage.getItem(SYNC_ADMIN_ACADEMIC_CACHE_KEY) === '1') {
-                        actualizarPantallaCarga('Verificando cambios académicos por curso…');
-                        await actualizarCacheAcademicaCoordinador();
-                    }
-                    guardarLineaBaseSincronizacion(crearEstadoSincronizable());
-                    actualizarPantallaCarga('Datos locales verificados con Firebase.');
-                    if (completarConexionRecuperada()) return;
-                    finalizarArranque();
-                    return;
-                }
+                // localStorage se comparte entre pestañas y no es una instantánea
+                // atómica de datos + revisión. Al abrir se revalida el alcance en servidor.
                 firebaseReady = true;
                 actualizarPantallaCarga(alcance.rol === 'coordinador' ? 'Cargando la estructura administrativa…' : 'Cargando únicamente los datos autorizados…');
                 await cargarDatosPorAlcanceFirebase(alcance);
                 localStorage.setItem('dunamisSyncProtocol', '6');
                 firebaseReady = true;
-                if (revisionFirebaseActual && localStorage.getItem(SYNC_PENDING_KEY) !== '1') localStorage.setItem(SYNC_REVISION_KEY, revisionFirebaseActual);
+                if (revisionFirebaseActual && sessionStorage.getItem(SYNC_PENDING_KEY) !== '1') localStorage.setItem(SYNC_REVISION_KEY, revisionFirebaseActual);
                 if (completarConexionRecuperada()) return;
                 finalizarArranque();
             } catch (error) {
@@ -1682,7 +1665,7 @@
 
         function guardarDatosFirebaseDebounced() {
             if (!firebaseReady || !firestoreDB) {
-                localStorage.setItem(SYNC_PENDING_KEY, '1');
+                sessionStorage.setItem(SYNC_PENDING_KEY, '1');
                 return;
             }
             clearTimeout(firebaseSaveTimer);
@@ -1695,7 +1678,7 @@
             clearTimeout(firebaseRetryTimer);
             reintentoGuardadoEspecifico = reintento;
             firebaseRetryTimer = setTimeout(() => {
-                if (!firebaseReady || !firestoreDB || localStorage.getItem(SYNC_PENDING_KEY) !== '1') return;
+                if (!firebaseReady || !firestoreDB || sessionStorage.getItem(SYNC_PENDING_KEY) !== '1') return;
                 if (reintentoGuardadoEspecifico) reintentoGuardadoEspecifico();
                 else if (alcanceDatosActual.startsWith('coordinador:')) guardarDatosFirebase();
             }, 5000);
@@ -1746,9 +1729,12 @@
                 const base = estadoFirebaseSincronizado || {};
                 confirmados.forEach(({ op, data }) => {
                     if (op.signal) {
-                        if (op.coleccion === 'metadata' && op.id === 'app') localStorage.setItem(SYNC_REVISION_KEY, data.revision);
+                        if (op.coleccion === 'metadata' && op.id === 'app') {
+                            revisionFirebaseActual = data.revision;
+                            localStorage.setItem(SYNC_REVISION_KEY, data.revision);
+                        }
                         if (op.coleccion === 'syncCursos') {
-                            const revisiones = JSON.parse(localStorage.getItem(SYNC_COURSE_REVISIONS_KEY) || '{}');
+                            const revisiones = leerRevisionesCursosLocales();
                             revisiones[op.id] = data.revision;
                             guardarRevisionesCursosLocales(revisiones);
                         }
@@ -1852,14 +1838,14 @@
             try {
                 const { operaciones, estadoActual, revision } = obtenerOperacionesDiferenciales();
                 if (!operaciones.length) {
-                    localStorage.removeItem(SYNC_PENDING_KEY);
+                    sessionStorage.removeItem(SYNC_PENDING_KEY);
                     return;
                 }
                 revisionGuardadoEnCurso = revision;
                 await ejecutarOperacionesFirebase(operaciones);
-                localStorage.removeItem(SYNC_PENDING_KEY);
+                sessionStorage.removeItem(SYNC_PENDING_KEY);
                 if (obtenerOperacionesDiferenciales().operaciones.length) {
-                    localStorage.setItem(SYNC_PENDING_KEY, '1');
+                    sessionStorage.setItem(SYNC_PENDING_KEY, '1');
                     guardadoFirebasePendiente = true;
                 }
                 reintentoGuardadoEspecifico = null;
@@ -1867,14 +1853,14 @@
             } catch (error) {
                 console.warn('No se pudieron guardar datos en Firebase.', error);
                 showToast('No se pudo guardar en Firebase. Quedó respaldo local.', 'warning');
-                localStorage.setItem(SYNC_PENDING_KEY, '1');
+                sessionStorage.setItem(SYNC_PENDING_KEY, '1');
                 if (!manejarRechazoReglasFirebase(error, 'el guardado administrativo')) programarReintentoGuardadoFirebase();
             } finally {
                 guardadoFirebaseEnCurso = false;
                 if (guardadoFirebasePendiente) {
                     guardadoFirebasePendiente = false;
                     guardarDatosFirebase();
-                } else if (sincronizacionVistaPendiente && localStorage.getItem(SYNC_PENDING_KEY) !== '1') {
+                } else if (sincronizacionVistaPendiente && sessionStorage.getItem(SYNC_PENDING_KEY) !== '1') {
                     sincronizacionVistaPendiente = false;
                     sincronizarVistaActualDesdeFirebase();
                 }
@@ -1887,7 +1873,7 @@
                 reintentarConexionFirebase();
                 return;
             }
-            if (!firebaseReady || localStorage.getItem(SYNC_PENDING_KEY) !== '1') return;
+            if (!firebaseReady || sessionStorage.getItem(SYNC_PENDING_KEY) !== '1') return;
             if (reintentoGuardadoEspecifico) reintentoGuardadoEspecifico();
             else if (alcanceDatosActual.startsWith('coordinador:')) guardarDatosFirebase();
         });
@@ -1895,6 +1881,21 @@
         window.addEventListener('offline', () => {
             modoSinConexion = true;
             mostrarEstadoConexionSinRed(true, 'El dispositivo perdió la conexión a Internet. Los cambios quedarán pendientes de sincronización.');
+        });
+
+        window.addEventListener('focus', async () => {
+            if (!usuarioActual || !firebaseReady || firebaseAccessBlocked || Date.now() - ultimaRevalidacionFoco < 60000) return;
+            ultimaRevalidacionFoco = Date.now();
+            try {
+                const snapshot = await firestoreDB.collection('metadata').doc('app').get({ source: 'server' });
+                const data = snapshot.data() || {};
+                if (data.revision && data.revision !== revisionFirebaseActual) {
+                    sincronizarVistaActualDesdeFirebase({ ...data, estructura: true, cambioMasivo: data.parentRevision !== revisionFirebaseActual || data.cambioMasivo });
+                }
+                detenerSincronizacionTiempoReal();
+                activarSincronizacionTiempoReal();
+                sincronizarVistaActualDesdeFirebase();
+            } catch (error) { manejarRechazoReglasFirebase(error, 'la revalidación al volver a la página'); }
         });
 
         async function guardarCambiosAsistenciaFirebase(cambiosAsistencia) {
@@ -1921,7 +1922,7 @@
             });
             if (!operaciones.length) {
                 showToast('No hay cambios nuevos para sincronizar.', 'info');
-                localStorage.removeItem(SYNC_PENDING_KEY);
+                sessionStorage.removeItem(SYNC_PENDING_KEY);
                 return true;
             }
             const revision = crearRevisionSincronizacion();
@@ -1943,7 +1944,7 @@
             } catch (error) {
                 console.warn('No se pudieron sincronizar las asistencias.', error);
                 showToast('No se pudieron sincronizar las asistencias. Quedaron guardadas en este dispositivo.', 'warning');
-                localStorage.setItem(SYNC_PENDING_KEY, '1');
+                sessionStorage.setItem(SYNC_PENDING_KEY, '1');
                 reintentoGuardadoEspecifico = () => guardarCambiosAsistenciaFirebase(asistenciasUnicas);
                 if (!manejarRechazoReglasFirebase(error, 'el guardado de asistencias')) {
                     programarReintentoGuardadoFirebase(reintentoGuardadoEspecifico);
@@ -1982,7 +1983,7 @@
                 return true;
             } catch (error) {
                 console.warn('No se pudo sincronizar la nota.', error);
-                localStorage.setItem(SYNC_PENDING_KEY, '1');
+                sessionStorage.setItem(SYNC_PENDING_KEY, '1');
                 reintentoGuardadoEspecifico = () => guardarNotaFirebase(clave, idCurso, idEstudiante);
                 if (!manejarRechazoReglasFirebase(error, 'el guardado de una calificación')) {
                     programarReintentoGuardadoFirebase(reintentoGuardadoEspecifico);
@@ -2026,9 +2027,9 @@
             const cancelarMetadata = firestoreDB.collection('metadata').doc('app').onSnapshot(snapshot => {
                 if (snapshot.metadata.fromCache) return;
                 const metadata = snapshot.data() || {};
-                if (!arranqueFinalizado || !metadata.revision || metadata.sourceClientId === clienteFirebase || metadata.revision === localStorage.getItem(SYNC_REVISION_KEY)) return;
+                if (!arranqueFinalizado || !metadata.revision || metadata.sourceClientId === clienteFirebase || metadata.revision === revisionFirebaseActual) return;
                 sincronizarVistaActualDesdeFirebase({ ...metadata, estructura: true,
-                    cambioMasivo: metadata.cambioMasivo || metadata.parentRevision !== (localStorage.getItem(SYNC_REVISION_KEY) || '') });
+                    cambioMasivo: metadata.cambioMasivo || metadata.parentRevision !== revisionFirebaseActual });
             }, error => {
                 console.warn('No se pudo escuchar la senal administrativa.', error);
                 manejarRechazoReglasFirebase(error, 'la escucha de cambios administrativos');
@@ -2188,8 +2189,8 @@
         function actualizarIndicadorPendientes() {
             const actual = crearEstadoSincronizable();
             const colecciones = usuarioActual?.rol === 'coordinador' ? Object.keys(actual) : ['notas', 'asistencias'];
-            if (colecciones.some(c => !DunamisSync.equal(actual[c], estadoFirebaseSincronizado?.[c] || {}))) localStorage.setItem(SYNC_PENDING_KEY, '1');
-            else localStorage.removeItem(SYNC_PENDING_KEY);
+            if (colecciones.some(c => !DunamisSync.equal(actual[c], estadoFirebaseSincronizado?.[c] || {}))) sessionStorage.setItem(SYNC_PENDING_KEY, '1');
+            else sessionStorage.removeItem(SYNC_PENDING_KEY);
         }
 
         function hayPlanillaSinGuardar() {
@@ -2202,7 +2203,7 @@
 
         async function sincronizarVistaActualDesdeFirebase(metadata = {}) {
             if (Object.keys(metadata).length) senalesPendientes.push(metadata);
-            if (sincronizacionVistaEnCurso || !firebaseReady || !firestoreDB || guardadoFirebaseEnCurso || transaccionesActivas || hayPlanillaSinGuardar() || localStorage.getItem(SYNC_PENDING_KEY) === '1') {
+            if (sincronizacionVistaEnCurso || !firebaseReady || !firestoreDB || guardadoFirebaseEnCurso || transaccionesActivas || hayPlanillaSinGuardar() || sessionStorage.getItem(SYNC_PENDING_KEY) === '1') {
                 sincronizacionVistaPendiente = true;
                 return;
             }
@@ -2301,7 +2302,10 @@
                 console.warn('No se pudo actualizar la vista con los cambios remotos.', error);
                 manejarRechazoReglasFirebase(error, 'la actualización de la vista');
             } finally {
-                if (sincronizacionCorrecta && metadata.estructura && metadata.revision) localStorage.setItem(SYNC_REVISION_KEY, metadata.revision);
+                if (sincronizacionCorrecta && metadata.estructura && metadata.revision) {
+                    revisionFirebaseActual = metadata.revision;
+                    localStorage.setItem(SYNC_REVISION_KEY, metadata.revision);
+                }
                 if (sincronizacionCorrecta && metadata.cursos) {
                     const revisiones = leerRevisionesCursosLocales();
                     metadata.cursos.forEach(senal => { revisiones[senal.idCurso] = senal.revision; });
@@ -2309,7 +2313,7 @@
                 }
                 sincronizacionVistaEnCurso = false;
                 if (!sincronizacionTiempoRealActiva && firebaseReady) activarSincronizacionTiempoReal();
-                if (senalesPendientes.length && localStorage.getItem(SYNC_PENDING_KEY) !== '1') {
+                if (senalesPendientes.length && sessionStorage.getItem(SYNC_PENDING_KEY) !== '1') {
                     sincronizacionVistaPendiente = false;
                     sincronizarVistaActualDesdeFirebase();
                 }
@@ -3113,7 +3117,7 @@
             }
             db.notas[clave] = { notaFinal: notaFinal === '' ? '' : Number(notaFinal.toFixed(1)) };
             guardarDatosLocales({ skipFirebase: true });
-            localStorage.setItem(SYNC_PENDING_KEY, '1');
+            sessionStorage.setItem(SYNC_PENDING_KEY, '1');
             const contenidoOriginal = boton?.innerHTML;
             if (boton) { boton.disabled = true; boton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
             const sincronizado = await guardarNotaFirebase(clave, idCurso, idEstudiante);
@@ -3763,7 +3767,7 @@
 
         function logout() {
             if (transaccionesActivas || guardadoFirebaseEnCurso) { showToast('Espere a que termine el guardado antes de salir.', 'info'); return; }
-            if (localStorage.getItem(SYNC_PENDING_KEY) === '1') preservarBorradorLocal('cierre-sesion');
+            if (sessionStorage.getItem(SYNC_PENDING_KEY) === '1') preservarBorradorLocal('cierre-sesion');
             senalesPendientes.length = 0;
             detenerSincronizacionTiempoReal();
             localStorage.removeItem(SESSION_KEY);
@@ -3774,8 +3778,9 @@
             guardarDatosLocales({ skipFirebase: true });
             localStorage.setItem(SYNC_SCOPE_KEY, 'login');
             localStorage.removeItem(SYNC_BASELINE_KEY);
+            sessionStorage.removeItem(SYNC_BASELINE_KEY);
             localStorage.removeItem(SYNC_REVISION_KEY);
-            localStorage.removeItem(SYNC_PENDING_KEY);
+            sessionStorage.removeItem(SYNC_PENDING_KEY);
             cerrarMenuMovil();
             document.getElementById('view-dashboard').classList.add('hidden');
             document.getElementById('view-login').classList.remove('hidden');
@@ -4855,7 +4860,7 @@
                 return;
             }
             guardarDatosLocales({ skipFirebase: true });
-            localStorage.setItem(SYNC_PENDING_KEY, '1');
+            sessionStorage.setItem(SYNC_PENDING_KEY, '1');
             const sincronizado = await guardarCambiosAsistenciaFirebase(cambiosAsistencia);
             if (sincronizado) controles.forEach(control => {
                 control.dataset.estadoOriginal = control.dataset.estado || '';
@@ -4918,7 +4923,7 @@
             }
             db.notas[k] = { notaFinal: Number(notaFinal.toFixed(1)) };
             guardarDatosLocales({ skipFirebase: true });
-            localStorage.setItem(SYNC_PENDING_KEY, '1');
+            sessionStorage.setItem(SYNC_PENDING_KEY, '1');
             const iconoOriginal = boton?.innerHTML;
             if (boton) { boton.disabled = true; boton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
             const sincronizado = await guardarNotaFirebase(k, idCurso, idEstudiante);

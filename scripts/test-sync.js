@@ -26,6 +26,10 @@ assert.ok(!fn('inicializarFirebase').includes('enablePersistence('));
 assert.ok(fn('cargarDatosFirebase').includes("preservarBorradorLocal('recuperacion')"));
 assert.ok(!fn('activarSincronizacionTiempoReal').includes('primeraEntrega'));
 assert.ok(fn('sincronizarVistaActualDesdeFirebase').includes('senalesPendientes.push(metadata)'));
+assert.ok(fn('activarSincronizacionTiempoReal').includes('metadata.revision === revisionFirebaseActual'));
+assert.ok(!fn('leerRevisionesCursosLocales').includes('localStorage.getItem'));
+assert.ok(!fn('cargarDatosFirebase').includes('cacheLocalValida'));
+assert.ok(fn('guardarDatosLocales').includes('sessionStorage.setItem(STORAGE_KEY'));
 
 async function testTransaction() {
     const store = new Map([['cursos/1', { id: '1', nombre: 'Curso', horario: '19:00', docente: 'B' }]]);
