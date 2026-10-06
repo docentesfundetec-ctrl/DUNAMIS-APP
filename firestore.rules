@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Compatibilidad transitoria con acceso por documento y Firebase anónimo.
+    // NO proporciona identidad ni aislamiento por rol. Requiere migración futura.
+    function sesion() { return request.auth != null; }
+    function versionActual() {
+      return request.resource.data.get('_syncProtocol', 0) == 6
+        && request.resource.data.get('_syncRevision', '') is string
+        && request.resource.data.get('_syncRevision', '').size() > 0
+        && request.resource.data.updatedAt == request.time;
+    }
+    function creacion() {
+      return sesion() && versionActual()
+        && request.resource.data.get('_baseRevision', '') == '';
+    }
+    function actualizacion() {
+      return sesion() && versionActual()
+        && request.resource.data._syncRevision != resource.data.get('_syncRevision', '')
+        && request.resource.data.get('_baseRevision', '') == resource.data.get('_syncRevision', '');
+    }
+    function borradoActual() {
+      let guard = getAfter(/databases/$(database)/documents/metadata/commit).data;
+      return sesion() && guard._syncProtocol == 6 && guard.uid == request.auth.uid
+        && guard.updatedAt == request.time;
+    }
+    match /{coleccion}/{documento} {
+      allow read: if sesion() && coleccion in ['usuarios','carreras','cursos','matriculas','notas','asistencias','formularios','config','metadata','syncCursos'];
+      allow create: if coleccion in ['usuarios','carreras','cursos','matriculas','notas','asistencias','formularios','config','syncCursos'] && creacion();
+      allow update: if coleccion in ['usuarios','carreras','cursos','matriculas','notas','asistencias','formularios','config','syncCursos'] && actualizacion();
+      allow delete: if coleccion in ['usuarios','carreras','cursos','matriculas','notas','asistencias','formularios','config','syncCursos'] && borradoActual();
+    }
+    match /metadata/{documento} {
+      allow delete: if documento.matches('_diagnostico_.*') && borradoActual();
+      allow create: if documento != 'commit' && creacion();
+      allow update: if documento != 'commit' && actualizacion();
+      allow create, update: if documento == 'commit' && sesion()
+        && request.resource.data.keys().hasOnly(['_syncProtocol','uid','updatedAt'])
+        && request.resource.data._syncProtocol == 6
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.updatedAt == request.time;
+    }
+  }
+}

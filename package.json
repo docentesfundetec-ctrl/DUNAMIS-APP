@@ -1,0 +1,15 @@
+{
+  "name": "plataforma-gestion-educativa",
+  "version": "0.1.0",
+  "private": true,
+  "description": "App web para gestion de cursos, notas y asistencias.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build:css": "npx --yes tailwindcss@3.4.17 --config tailwind.config.js --input tailwind.input.css --output assets/tailwind.css --minify",
+    "build": "npm run build:css && node scripts/build-portable.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
